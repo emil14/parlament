@@ -1,78 +1,88 @@
-# Parlament
+# Parliament
 
-I've often thought "If only I could force 3-4 LLMs to work on task together so they can then magically decide who did it better, or maybe somehow merge their results into a single one without me doing anything", so I've created this repo.
+**Parliament** is a simple pattern for making several LLMs work together:
 
-It describes a pattern of utilizing several different LLMs to produce higher quality content, that can be used for anything from book writing to code generation.
+> Multiple **workers** generate answers → multiple **judges** evaluate them → the system iterates until we get a good enough result.
 
-## Process
+It’s useful for anything where quality really matters:
 
-An iterative generational process that takes a task, processes it and returns result.
+- long-form writing,
+- non-trivial code generation,
+- important emails, specs, docs, etc.
 
-It runs several iterations under the hood, until result considered good enough.
+The key idea: instead of a single model trying to do everything, we separate **generation** (workers) from **evaluation** (judges), and we run several rounds where the next generation tries to *beat* the previous best answer.
 
-## Judges and Workers
+---
 
-We have 2 sets of AI agents:
+## TL;DR
 
-1. Judges
-2. Workers
+1. You have **N workers** (different models, same prompt) that generate answers.
+2. You have **M judges** (different models, same prompt) that score each worker’s answer from **1 to 10**.
+3. For each worker, you compute the **average judge score**.
+4. If the best average score is **≥ MIN_SCORE** or you hit **MAX_ITER** (e.g. 10), you stop.
+5. Otherwise, you feed the **best answer + review** back into the next iteration and say:  
+   > “Here’s the previous best result and the critique. Try to beat it.”
+6. If multiple workers tie for best average score, you pick **one at random** among them.
 
-Workers produce content and judges judge it.
+That’s it.
 
-Separation between them exist to reduce responsibility of the prompts.
+---
 
-- There can be as many judges and workers as we want
-- All workers must share the same prompt but have different LLMs
-- Same for judges
+## Concepts
 
-## Loop
+### Workers
 
-- Workers produce their results.
-- Every judge judges the work of every worker.
-- If not a single result is good enough, a new iteration is performed.
-- If there's more than one good enough results, random one is returned.
-- If there's only one good enough result, it is returned as the best one.
-- If maximum amount of iterations was performed, then best result is returned, and the randomly selected one if there's more than one best.
+- **Workers produce content.**
+- All workers share the **same prompt** (same task description).
+- Each worker uses a **different LLM** (or at least different settings).
+- This way you’re mostly comparing **model behavior**, not prompt differences.
+
+Examples:
+
+- Worker 1 → `gpt-4.1-mini`  
+- Worker 2 → `gpt-4.1`  
+- Worker 3 → `some-open-source-model`
+
+All of them see the same task, but may produce different outputs.
+
+---
+
+### Judges
+
+- **Judges evaluate worker outputs.**
+- All judges also share the **same judging prompt**.
+- Each judge may use a different LLM (but typically a **stronger or equal** model than the workers).
+- Judges score on a **fixed scale (1–10)** and optionally produce a short textual review.
+
+Examples:
+
+- Judge 1 → `gpt-4.1`  
+- Judge 2 → `gpt-4.1-large`  
+
+Judges decide *how good* each worker’s output is with respect to the task.
+
+---
+
+## Data Structures
+
+Roughly:
 
 ```python
-def iter(task: Task, i: int = 0):
-  results: list[str] = workers(task)
-  judgments: list[Judgment] = judges(results)
-  best: list[Judgment] = find_best(judgments)
+from dataclasses import dataclass
+from typing import Optional
 
-  if best.score >= min_score or i == max_iter:
-    return best.result
+Score = int  # 1..10
 
-  next_task = Task(initial_task=task, prev_judgment=best)
-  return iter(next_task, i+1)
-```
-
-The data structures are roughly this:
-
-```python
-class Task:
-  initial_task: str
-  prev_judgment: Judgment | None
-
+@dataclass
 class Judgment:
-  result: str
-  score: int
-  review: str
-```
+    worker_id: str
+    result: str          # worker's output
+    score: Score         # 1..10
+    review: str          # short critique
 
-## Best Result
-
-For `n` workers and `m` judges we have `n*m` judgments.
-
-For example for 2 workers and 2 judges we have 4 judgments: `j1-w1, j1-w2, j2-w1, j2-j2`
-
-The avg score for `w1` is `(j1-w1 / j2-w1) / 2` and for `w2` is `(j1-w2 / j2-w2) / 2`.
-
-If `w1_avg` is higher than `w2_avg` then we return `w1_avg`, otherwise `w2_avg`.
-
-If `w1_avg` and `w2_avg` are equal, we randomly select one of them.
-
-Same rules apply for >2 results.
-
-
-
+@dataclass
+class Task:
+    initial_task: str              # original user task
+    prev_best_result: Optional[str] = None
+    prev_best_review: Optional[str] = None
+    iteration: int = 0
