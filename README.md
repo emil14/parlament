@@ -53,109 +53,6 @@ Examples:
 
 Judges decide *how good* each worker’s output is with respect to the task.
 
-## Data Structures
-
-Roughly:
-
-```python
-from dataclasses import dataclass
-from typing import Optional
-
-Score = int  # 1..10
-
-
-@dataclass
-class WorkerOutput:
-    worker_id: str
-    result: str          # worker's output
-
-
-@dataclass
-class Judgment:
-    worker_id: str
-    result: str          # worker's output (copied here for convenience)
-    score: Score         # 1..10
-    review: str          # short critique from judge
-
-
-@dataclass
-class Task:
-    initial_task: str               # original user task
-    prev_best_result: Optional[str] = None
-    prev_best_review: Optional[str] = None
-    iteration: int = 0
-```
-
-- Task.initial_task never changes.
-- prev_best_result and prev_best_review are filled in after the first iteration, so workers can try to beat the previous best.
-- iteration is just a counter.
-
-### Core Loop
-
-High-level interface:
-
-```python
-from typing import List, Tuple
-import random
-
-MIN_SCORE: Score = 8         # "good enough" threshold (1..10)
-MAX_ITER: int = 10           # maximum iterations
-
-
-def run_parliament(initial_task: str) -> str:
-    """
-    Entry point. Returns the best result as a string.
-    """
-    task = Task(initial_task=initial_task)
-    return _iterate(task)
-
-
-def _iterate(task: Task) -> str:
-    # 1) Workers generate results
-    worker_outputs: List[WorkerOutput] = run_workers(task)
-
-    # 2) Judges evaluate each worker's result
-    judgments: List[Judgment] = run_judges(worker_outputs)
-
-    # 3) Find all best workers according to average judge score
-    best_worker_ids, best_avg_score = find_best_workers(judgments)
-
-    # Randomly select one best judgment (worker + judge) among all best workers
-    best_judgment = select_random_best_judgment(judgments, best_worker_ids)
-
-    # 4) Stopping criteria
-    if best_avg_score >= MIN_SCORE or task.iteration >= MAX_ITER:
-        # Return the result of the randomly selected best judgment
-        return best_judgment.result
-
-    # 5) Prepare next iteration task with feedback from the best judgment
-    next_task = Task(
-        initial_task=task.initial_task,
-        prev_best_result=best_judgment.result,
-        prev_best_review=best_judgment.review,
-        iteration=task.iteration + 1,
-    )
-
-    return _iterate(next_task)
-
-Where you implement:
-
-def run_workers(task: Task) -> List[WorkerOutput]:
-    """
-    Call all worker models with the same prompt (task + optional previous best)
-    and return their outputs.
-    """
-    raise NotImplementedError
-
-
-def run_judges(worker_outputs: List[WorkerOutput]) -> List[Judgment]:
-    """
-    For each worker output, call all judges to score and review it.
-    Returns a flat list of Judgments.
-    """
-    raise NotImplementedError
-```
-
 ### Best Result Selection
 
 For N workers and M judges, we have N * M individual judgments.
@@ -172,65 +69,12 @@ For each worker, we compute the average of all judge scores for that worker:
 w1_avg = (score_j1_w1 + score_j2_w1) / 2
 w2_avg = (score_j1_w2 + score_j2_w2) / 2
 
-Generalized:
-
-```python
-from collections import defaultdict
-
-
-def find_best_workers(judgments: List[Judgment]) -> Tuple[List[str], float]:
-    """
-    Returns (best_worker_ids, best_avg_score).
-
-    - best_worker_ids: all worker IDs whose average score is equal
-      to the maximum average score.
-    - best_avg_score: that maximum average score.
-    """
-    scores_by_worker = defaultdict(list)
-    for j in judgments:
-        scores_by_worker[j.worker_id].append(j.score)
-
-    if not scores_by_worker:
-        raise RuntimeError("No judgments provided")
-
-    avg_score_by_worker = {
-        worker_id: sum(scores) / len(scores)
-        for worker_id, scores in scores_by_worker.items()
-        if scores
-    }
-
-    best_avg_score = max(avg_score_by_worker.values())
-    best_worker_ids = [
-        worker_id
-        for worker_id, avg_score in avg_score_by_worker.items()
-        if avg_score == best_avg_score
-    ]
-
-    return best_worker_ids, best_avg_score
-```
-
-Now we have all best workers according to judges (there may be more than one).
-
 ### Random Selection Among Best Results
 
 We want:
 	•	If multiple workers have the same best average score, we treat all of them as “best workers”.
 	•	We then pick one best judgment at random across all best workers.
 That judgment’s result is the final output, and its review is what we feed into the next iteration (if any).
-
-```python
-def select_random_best_judgment(
-    judgments: List[Judgment],
-    best_worker_ids: List[str],
-) -> Judgment:
-    """
-    Among all judgments belonging to the best workers, pick one at random.
-    """
-    candidates = [j for j in judgments if j.worker_id in best_worker_ids]
-    if not candidates:
-        raise RuntimeError("No judgments for best workers")
-    return random.choice(candidates)
-```
 
 This matches the idea:
 
@@ -273,6 +117,140 @@ From the second iteration onward:
 	•	Workers are explicitly in “beat the previous best” mode.
 ```
 
+## Naive Implementation
+
+```python
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from collections import defaultdict
+import random
+
+Score = int  # 1..10
+
+
+@dataclass
+class WorkerOutput:
+    worker_id: str
+    answer: str  # worker's answer
+
+
+@dataclass
+class Evaluation:
+    worker_id: str
+    answer: str          # same answer as judged
+    score: Score         # 1..10
+    review: str          # short critique from evaluator
+
+
+@dataclass
+class IterationState:
+    task_prompt: str
+    best_answer: Optional[str] = None
+    best_answer_review: Optional[str] = None
+    index: int = 0
+
+
+QUALITY_THRESHOLD: Score = 8
+MAX_ITERATIONS: int = 10
+
+
+def run_parliament(task_prompt: str) -> str:
+    """
+    Entry point. Returns the best answer as a string.
+    """
+    state = IterationState(task_prompt=task_prompt)
+    return _iterate(state)
+
+
+def _iterate(state: IterationState) -> str:
+    # 1) Workers (candidates) generate answers
+    worker_outputs: List[WorkerOutput] = run_workers(state)
+
+    # 2) Evaluators (judges) score each worker's answer
+    evaluations: List[Evaluation] = run_evaluators(worker_outputs)
+
+    # 3) Find the best worker according to average evaluator score
+    best_evaluation, best_avg_score = find_best_worker(evaluations)
+
+    # 4) Stopping criteria
+    if best_avg_score >= QUALITY_THRESHOLD or state.index >= MAX_ITERATIONS:
+        return best_evaluation.answer
+
+    # 5) Prepare next iteration state with feedback from the best evaluation
+    next_state = IterationState(
+        task_prompt=state.task_prompt,
+        best_answer=best_evaluation.answer,
+        best_answer_review=best_evaluation.review,
+        index=state.index + 1,
+    )
+
+    return _iterate(next_state)
+
+
+def run_workers(state: IterationState) -> List[WorkerOutput]:
+    """
+    Call all worker models (candidates) with the same prompt
+    (task + best-answer feedback if available) and return their outputs.
+    """
+    raise NotImplementedError
+
+
+def run_evaluators(worker_outputs: List[WorkerOutput]) -> List[Evaluation]:
+    """
+    For each worker output, call all evaluator models to score and review it.
+    Returns a flat list of Evaluation objects.
+    """
+    raise NotImplementedError
+
+
+def find_best_worker(evaluations: List[Evaluation]) -> Tuple[Evaluation, float]:
+    """
+    Given all evaluations (N workers * M evaluators), compute the average score
+    per worker and return:
+
+    - one randomly chosen Evaluation for a worker with the best average score
+    - the best average score itself
+
+    If multiple workers tie for the best average score, we select one of them
+    at random.
+    """
+    if not evaluations:
+        raise RuntimeError("No evaluations provided")
+
+    scores_by_worker = defaultdict(list)
+    for e in evaluations:
+        scores_by_worker[e.worker_id].append(e.score)
+
+    if not scores_by_worker:
+        raise RuntimeError("No scores aggregated per worker")
+
+    avg_score_by_worker = {
+        worker_id: sum(scores) / len(scores)
+        for worker_id, scores in scores_by_worker.items()
+        if scores
+    }
+
+    if not avg_score_by_worker:
+        raise RuntimeError("No average scores computed")
+
+    best_avg_score = max(avg_score_by_worker.values())
+    best_worker_ids = [
+        worker_id
+        for worker_id, avg_score in avg_score_by_worker.items()
+        if avg_score == best_avg_score
+    ]
+
+    # All evaluations belonging to workers with the best average score
+    candidate_evaluations = [
+        e for e in evaluations if e.worker_id in best_worker_ids
+    ]
+    if not candidate_evaluations:
+        raise RuntimeError("No evaluations for best-scoring workers")
+
+    best_evaluation = random.choice(candidate_evaluations)
+    return best_evaluation, best_avg_score
+```
+
 ### Configuration
 
 Suggested defaults:
@@ -295,18 +273,9 @@ You can tune this per domain:
 The total number of LLM calls grows roughly like:
 
 ```python
-calls_per_iteration ≈ NUM_WORKERS           # worker calls
-                      + NUM_WORKERS * NUM_JUDGES  # judge calls
+calls_per_iteration ≈ NUM_WORKERS * NUM_JUDGES
 total_calls ≈ calls_per_iteration * MAX_ITER
 ```
-
-So it’s a good idea to start with:
-
-- 2 workers,
-- 1–2 judges,
-- MAX_ITER = 3–5,
-
-and only increase these numbers if you see real quality improvements.
 
 ### Summary
 
