@@ -287,3 +287,13 @@ Parliament is a pattern, not a heavy framework:
 
 You can implement this in any stack; the code above is intentionally minimal so you can adapt it to your own infra and prompts.
 
+## Development
+
+This project uses `uv` for dependency management.
+
+To run the project:
+
+```bash
+uv run main.py
+```
+
