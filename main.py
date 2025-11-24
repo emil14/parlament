@@ -12,12 +12,10 @@ async def main():
     logger.info("Starting parliament...")
     
     # Initialize settings
-    settings = Settings()
+    settings = Settings()  # pyright: ignore[reportCallIssue]
     
-    # Example usage (commented out to avoid running without API key)
-    # response = await query_model("openai/gpt-4o-mini", [{"role": "user", "content": "Hello!"}], settings)
-    # if response:
-    #     logger.info(f"Response: {response['content']}")
+    response = await query_model("openai/gpt-4o-mini", [{"role": "user", "content": "Hello!"}], settings)
+    logger.info(f"Response: {response['content']}")
     
     logger.info("Parliament initialized.")
 
