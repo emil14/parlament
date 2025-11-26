@@ -3,7 +3,6 @@
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
 
 from llm_client import query_models_parallel, query_model
 from config import Settings
@@ -374,22 +373,6 @@ async def run_full_council(
     """
     # Stage 1: Collect individual responses
     stage1_responses = await stage1_collect_responses(user_query, settings)
-
-    # If no models responded successfully, return error
-    if not stage1_responses:
-        error_result = Stage3Result(
-            model="error",
-            response="All models failed to respond. Please try again."
-        )
-        return CouncilResult(
-            stage1_responses={},
-            stage2_rankings=[],
-            stage3_result=error_result,
-            metadata=CouncilMetadata(
-                label_to_model={},
-                aggregate_rankings=[]
-            )
-        )
 
     # Stage 2: Collect rankings
     stage2_rankings = await stage2_collect_rankings(
