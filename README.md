@@ -297,3 +297,62 @@ To run the project:
 uv run main.py
 ```
 
+## Using Council as a Custom Model in Cursor
+
+The council system can be exposed as an OpenAI-compatible API endpoint that Cursor can use as a custom model.
+
+### Starting the Server
+
+Start the API server:
+
+```bash
+uv run main.py server
+```
+
+The server will start on `http://localhost:8000` and expose:
+- `/v1/chat/completions` - Main chat completions endpoint (OpenAI-compatible)
+- `/v1/models` - List available models
+- `/health` - Health check endpoint
+
+### Configuring Cursor
+
+To use the council in Cursor:
+
+1. **Start the server** (see above)
+
+2. **Configure Cursor** to use a custom OpenAI-compatible endpoint:
+   - Open Cursor Settings
+   - Navigate to AI/Model settings
+   - Add a custom model with:
+     - **Base URL**: `http://localhost:8000`
+     - **Model ID**: `parliament/council` (or any identifier - the server accepts any model name)
+     - **API Key**: Not required (leave empty or use any value)
+
+3. **Select the model** in Cursor's model selector
+
+### How It Works
+
+When Cursor sends a request to the council API:
+
+1. **Stage 1**: All council models generate individual responses to your query
+2. **Stage 2**: Each council model ranks all the anonymized responses
+3. **Stage 3**: The chairman model synthesizes a final answer based on all responses and rankings
+
+The final synthesized response from Stage 3 is returned to Cursor as if it came from a single model.
+
+### Configuration
+
+Configure the council models in your `.env` file:
+
+```env
+OPENROUTER_API_KEY=your_key_here
+COUNCIL_MODELS=["openai/gpt-5.1", "google/gemini-3-pro-preview", "anthropic/claude-sonnet-4.5", "x-ai/grok-4"]
+CHAIRMAN_MODEL=google/gemini-3-pro-preview
+```
+
+### Notes
+
+- The council process takes longer than a single model call (it makes multiple API calls)
+- All models are queried in parallel where possible for efficiency
+- The server returns OpenAI-compatible responses, so it works with any tool that supports OpenAI's API format
+
