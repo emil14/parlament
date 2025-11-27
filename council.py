@@ -52,12 +52,13 @@ class CouncilResult:
     stage2_rankings: list[Stage2Result]
     stage3_result: Stage3Result
     metadata: CouncilMetadata
+    total_usage: dict[str, int]  # prompt_tokens, completion_tokens, total_tokens
 
 
 async def stage1_collect_responses(
     user_query: str,
     settings: Settings
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, int]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -66,7 +67,7 @@ async def stage1_collect_responses(
         settings: Application settings
 
     Returns:
-        Dict mapping model name to response content
+        Tuple of (dict mapping model name to response content, usage dict)
     """
     messages = [{"role": "user", "content": user_query}]
 
@@ -76,18 +77,28 @@ async def stage1_collect_responses(
     except RuntimeError as e:
         raise RuntimeError(f"Stage 1 (collecting responses) failed: {str(e)}") from e
 
-    # Extract response content for each model
-    return {
+    # Extract response content and accumulate usage
+    stage1_responses = {
         model: response.get('content', '')
         for model, response in responses.items()
     }
+    
+    # Accumulate usage from all models in Stage 1
+    stage1_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    for _model, response in responses.items():
+        usage = response.get('usage', {})
+        stage1_usage['prompt_tokens'] += usage.get('prompt_tokens', 0)
+        stage1_usage['completion_tokens'] += usage.get('completion_tokens', 0)
+        stage1_usage['total_tokens'] += usage.get('total_tokens', 0)
+    
+    return stage1_responses, stage1_usage
 
 
 async def stage2_collect_rankings(
     user_query: str,
     stage1_results: dict[str, str],
     settings: Settings
-) -> Stage2Rankings:
+) -> tuple[Stage2Rankings, dict[str, int]]:
     """
     Stage 2: Each model ranks the anonymized responses.
 
@@ -165,8 +176,10 @@ Now provide your evaluation and ranking:"""
     except RuntimeError as e:
         raise RuntimeError(f"Stage 2 (collecting rankings) failed: {str(e)}") from e
 
-    # Format results
+    # Format results and accumulate usage
     stage2_results: list[Stage2Result] = []
+    stage2_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    
     for model, response in responses.items():
         full_text = response.get('content', '')
         parsed = parse_ranking_from_text(full_text)
@@ -175,10 +188,19 @@ Now provide your evaluation and ranking:"""
             ranking=full_text,
             parsed_ranking=parsed
         ))
+        
+        # Accumulate usage
+        usage = response.get('usage', {})
+        stage2_usage['prompt_tokens'] += usage.get('prompt_tokens', 0)
+        stage2_usage['completion_tokens'] += usage.get('completion_tokens', 0)
+        stage2_usage['total_tokens'] += usage.get('total_tokens', 0)
 
-    return Stage2Rankings(
-        results=stage2_results,
-        label_to_model=label_to_model
+    return (
+        Stage2Rankings(
+            results=stage2_results,
+            label_to_model=label_to_model
+        ),
+        stage2_usage
     )
 
 
@@ -187,7 +209,7 @@ async def stage3_synthesize_final(
     stage1_results: dict[str, str],
     stage2_results: list[Stage2Result],
     settings: Settings
-) -> Stage3Result:
+) -> tuple[Stage3Result, dict[str, int]]:
     """
     Stage 3: Chairman synthesizes final response.
 
@@ -241,9 +263,20 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     except RuntimeError as e:
         raise RuntimeError(f"Stage 3 (Chairman synthesis) failed for model '{settings.CHAIRMAN_MODEL}': {str(e)}") from e
 
-    return Stage3Result(
-        model=settings.CHAIRMAN_MODEL,
-        response=response.get('content', '')
+    # Extract usage from Stage 3
+    usage = response.get('usage', {})
+    stage3_usage = {
+        'prompt_tokens': usage.get('prompt_tokens', 0),
+        'completion_tokens': usage.get('completion_tokens', 0),
+        'total_tokens': usage.get('total_tokens', 0),
+    }
+
+    return (
+        Stage3Result(
+            model=settings.CHAIRMAN_MODEL,
+            response=response.get('content', '')
+        ),
+        stage3_usage
     )
 
 
@@ -384,10 +417,10 @@ async def run_full_council(
         CouncilResult containing all stage results and metadata
     """
     # Stage 1: Collect individual responses
-    stage1_responses = await stage1_collect_responses(user_query, settings)
+    stage1_responses, stage1_usage = await stage1_collect_responses(user_query, settings)
 
     # Stage 2: Collect rankings
-    stage2_rankings = await stage2_collect_rankings(
+    stage2_rankings, stage2_usage = await stage2_collect_rankings(
         user_query,
         stage1_responses,
         settings
@@ -400,12 +433,19 @@ async def run_full_council(
     )
 
     # Stage 3: Synthesize final answer
-    stage3_result = await stage3_synthesize_final(
+    stage3_result, stage3_usage = await stage3_synthesize_final(
         user_query,
         stage1_responses,
         stage2_rankings.results,
         settings
     )
+
+    # Accumulate total usage across all stages
+    total_usage = {
+        'prompt_tokens': stage1_usage['prompt_tokens'] + stage2_usage['prompt_tokens'] + stage3_usage['prompt_tokens'],
+        'completion_tokens': stage1_usage['completion_tokens'] + stage2_usage['completion_tokens'] + stage3_usage['completion_tokens'],
+        'total_tokens': stage1_usage['total_tokens'] + stage2_usage['total_tokens'] + stage3_usage['total_tokens'],
+    }
 
     # Prepare metadata
     metadata = CouncilMetadata(
@@ -417,6 +457,7 @@ async def run_full_council(
         stage1_responses=stage1_responses,
         stage2_rankings=stage2_rankings.results,
         stage3_result=stage3_result,
-        metadata=metadata
+        metadata=metadata,
+        total_usage=total_usage
     )
 

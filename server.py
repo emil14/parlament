@@ -95,7 +95,14 @@ async def chat_completions(request: ChatCompletionRequest) -> ChatCompletionResp
         # Extract the final synthesized response from Stage 3
         final_response = council_result.stage3_result.response
         
-        logger.info("Council process completed successfully")
+        # Use real accumulated usage from all stages
+        total_usage = council_result.total_usage
+        
+        logger.info(
+            f"Council process completed successfully. "
+            f"Total tokens: {total_usage['total_tokens']} "
+            f"(prompt: {total_usage['prompt_tokens']}, completion: {total_usage['completion_tokens']})"
+        )
         
         # Build OpenAI-compatible response
         response_message = ChatMessage(
@@ -109,15 +116,10 @@ async def chat_completions(request: ChatCompletionRequest) -> ChatCompletionResp
             finish_reason="stop"
         )
         
-        # Estimate token usage (rough approximation)
-        # In production, you'd want to use a proper tokenizer
-        estimated_prompt_tokens = len(user_query.split()) * 1.3  # rough estimate
-        estimated_completion_tokens = len(final_response.split()) * 1.3
-        
         usage = Usage(
-            prompt_tokens=int(estimated_prompt_tokens),
-            completion_tokens=int(estimated_completion_tokens),
-            total_tokens=int(estimated_prompt_tokens + estimated_completion_tokens)
+            prompt_tokens=total_usage['prompt_tokens'],
+            completion_tokens=total_usage['completion_tokens'],
+            total_tokens=total_usage['total_tokens']
         )
         
         return ChatCompletionResponse(

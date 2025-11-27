@@ -50,9 +50,19 @@ async def query_model(
             raise ValueError(f"No choices returned from model {model}: {data}")
                 
         message = data['choices'][0]['message']
+        
+        # Extract usage information from OpenRouter response
+        usage = data.get('usage', {})
+        
         return {
             'content': message.get('content'),
-            'reasoning_details': message.get('reasoning_details')
+            'reasoning_details': message.get('reasoning_details'),
+            'usage': {
+                'prompt_tokens': usage.get('prompt_tokens', 0),
+                'completion_tokens': usage.get('completion_tokens', 0),
+                'total_tokens': usage.get('total_tokens', 0),
+            },
+            'model': model,
         }
 
 async def query_models_parallel(
