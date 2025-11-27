@@ -71,7 +71,10 @@ async def stage1_collect_responses(
     messages = [{"role": "user", "content": user_query}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(settings.COUNCIL_MODELS, messages, settings)
+    try:
+        responses = await query_models_parallel(settings.COUNCIL_MODELS, messages, settings)
+    except RuntimeError as e:
+        raise RuntimeError(f"Stage 1 (collecting responses) failed: {str(e)}") from e
 
     # Extract response content for each model
     return {
@@ -157,7 +160,10 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(settings.COUNCIL_MODELS, messages, settings)
+    try:
+        responses = await query_models_parallel(settings.COUNCIL_MODELS, messages, settings)
+    except RuntimeError as e:
+        raise RuntimeError(f"Stage 2 (collecting rankings) failed: {str(e)}") from e
 
     # Format results
     stage2_results: list[Stage2Result] = []
@@ -230,7 +236,10 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     messages = [{"role": "user", "content": chairman_prompt}]
 
     # Query the chairman model
-    response = await query_model(settings.CHAIRMAN_MODEL, messages, settings)
+    try:
+        response = await query_model(settings.CHAIRMAN_MODEL, messages, settings)
+    except RuntimeError as e:
+        raise RuntimeError(f"Stage 3 (Chairman synthesis) failed for model '{settings.CHAIRMAN_MODEL}': {str(e)}") from e
 
     return Stage3Result(
         model=settings.CHAIRMAN_MODEL,
@@ -343,7 +352,10 @@ Title:"""
     messages = [{"role": "user", "content": title_prompt}]
 
     # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, settings, timeout=30.0)
+    try:
+        response = await query_model("google/gemini-2.5-flash", messages, settings, timeout=30.0)
+    except RuntimeError as e:
+        raise RuntimeError(f"Title generation failed for model 'google/gemini-2.5-flash': {str(e)}") from e
 
     title = response.get('content', 'New Conversation').strip()
 
